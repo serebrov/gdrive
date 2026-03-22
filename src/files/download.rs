@@ -1,4 +1,5 @@
 use crate::common::drive_file;
+use crate::common::drive_file::DocType;
 use crate::common::file_tree_drive;
 use crate::common::file_tree_drive::FileTreeDrive;
 use crate::common::hub_helper;
@@ -167,12 +168,28 @@ pub async fn download_directory(
                 continue;
             }
 
-            let body = download_file(&hub, &file.drive_id)
-                .await
-                .map_err(Error::DownloadFile)?;
+            if file.is_google_doc() {
+                let doc_type = DocType::from_mime_type(
+                    file.mime_type.as_deref().unwrap_or_default(),
+                )
+                .unwrap();
+                let export_ext = doc_type.default_office_export_type();
+                let mime_type = export_ext.get_export_mime().unwrap();
 
-            println!("Downloading file '{}'", file_path.display());
-            save_body_to_file(body, &abs_file_path, file.md5.clone()).await?;
+                let body = files::export::export_file(&hub, &file.drive_id, &mime_type)
+                    .await
+                    .map_err(Error::ExportFile)?;
+
+                println!("Exporting {} '{}'", doc_type, file_path.display());
+                save_body_to_file(body, &abs_file_path, None).await?;
+            } else {
+                let body = download_file(&hub, &file.drive_id)
+                    .await
+                    .map_err(Error::DownloadFile)?;
+
+                println!("Downloading file '{}'", file_path.display());
+                save_body_to_file(body, &abs_file_path, file.md5.clone()).await?;
+            }
         }
     }
 
@@ -204,6 +221,7 @@ pub enum Error {
     Hub(hub_helper::Error),
     GetFile(google_drive3::Error),
     DownloadFile(google_drive3::Error),
+    ExportFile(google_drive3::Error),
     MissingFileName,
     FileExists(PathBuf),
     IsDirectory(String),
@@ -231,6 +249,7 @@ impl Display for Error {
             Error::Hub(err) => write!(f, "{}", err),
             Error::GetFile(err) => write!(f, "Failed getting file: {}", err),
             Error::DownloadFile(err) => write!(f, "Failed to download file: {}", err),
+            Error::ExportFile(err) => write!(f, "Failed to export file: {}", err),
             Error::MissingFileName => write!(f, "File does not have a name"),
             Error::FileExists(path) => write!(
                 f,
