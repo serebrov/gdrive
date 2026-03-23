@@ -227,6 +227,13 @@ async fn download_directory_recursive(
             println!("Exporting {} '{}'", doc_type, file_path.display());
             save_body_to_file(body, &abs_file_path, None).await?;
             stats.file_count += 1;
+        } else if drive_file::is_google_apps_type(child) {
+            let file_name = child.name.clone().unwrap_or_default();
+            let mime = child.mime_type.as_deref().unwrap_or("unknown");
+            eprintln!(
+                "Warning: Skipping '{}' (unsupported Google Apps type: {})",
+                file_name, mime
+            );
         }
     }
 
