@@ -187,11 +187,11 @@ async fn download_directory_recursive(
 
     for child in &children {
         if drive_file::is_directory(child) {
-            let child_name = child.name.clone().ok_or(Error::MissingFileName)?;
+            let child_name = sanitize_filename(&child.name.clone().ok_or(Error::MissingFileName)?);
             let child_path = dir_path.join(&child_name);
             download_directory_recursive(hub, child, root_path, &child_path, stats).await?;
         } else if drive_file::is_binary(child) {
-            let file_name = child.name.clone().ok_or(Error::MissingFileName)?;
+            let file_name = sanitize_filename(&child.name.clone().ok_or(Error::MissingFileName)?);
             let file_path = dir_path.join(&file_name);
             let abs_file_path = root_path.join(&file_path);
 
@@ -213,7 +213,7 @@ async fn download_directory_recursive(
         } else if let Some(doc_type) = DocType::from_mime_type(
             child.mime_type.as_deref().unwrap_or_default(),
         ) {
-            let file_name = child.name.clone().ok_or(Error::MissingFileName)?;
+            let file_name = sanitize_filename(&child.name.clone().ok_or(Error::MissingFileName)?);
             let export_ext = doc_type.default_office_export_type();
             let export_name = format!("{}.{}", file_name, export_ext);
             let file_path = dir_path.join(&export_name);
@@ -457,6 +457,10 @@ fn err_if_md5_mismatch(expected: Option<String>, actual: String) -> Result<(), E
             actual,
         })
     }
+}
+
+fn sanitize_filename(name: &str) -> String {
+    name.replace('/', "_")
 }
 
 fn compute_md5_from_path(path: &PathBuf) -> Result<String, io::Error> {
