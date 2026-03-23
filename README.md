@@ -1,4 +1,28 @@
-# gdrive
+# Updates to the original tool
+
+This is a fork of https://github.com/glotlabs/gdrive with the following updates:
+- The recursive download also does export
+- The recursive download is modified to walk the tree and download at the same time
+  - In the original tool it walks the tree first, then downloads which results in a long time with no output
+
+## Recursive download with export
+
+The `files download --recursive` will download all binary files from Google Drive and export Google Docs native files at the same time.
+
+The export will convert Google Docs documents to MS Office format:
+* Docs -> docx
+* Spreadsheet -> xlsx
+* Presentation -> pptx
+
+Example:
+
+```
+gdrive files download --recursive --destination ~/GoogleDriveBackup root
+```
+
+Note: `root` in the command above is a special name recognized by Google Drive API, it points to the root google drive folder.
+
+# Original readme: gdrive
 
 <img src="https://user-images.githubusercontent.com/720405/210108089-32b7a259-b384-49c3-a2d3-fe07a42791e2.png" width="100">
 
