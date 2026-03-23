@@ -149,6 +149,13 @@ pub async fn download_directory(
         human_bytes(stats.total_file_size as f64)
     );
 
+    if !stats.warnings.is_empty() {
+        eprintln!("\n{} warning(s):", stats.warnings.len());
+        for warning in &stats.warnings {
+            eprintln!("  - {}", warning);
+        }
+    }
+
     Ok(())
 }
 
@@ -157,6 +164,7 @@ struct DownloadStats {
     file_count: u64,
     folder_count: u64,
     total_file_size: u64,
+    warnings: Vec<String>,
 }
 
 #[async_recursion]
@@ -220,20 +228,33 @@ async fn download_directory_recursive(
             let abs_file_path = root_path.join(&file_path);
 
             let mime_type = export_ext.get_export_mime().unwrap();
-            let body = files::export::export_file(hub, child.id.as_deref().unwrap_or_default(), &mime_type)
-                .await
-                .map_err(Error::ExportFile)?;
+            let export_result = files::export::export_file(hub, child.id.as_deref().unwrap_or_default(), &mime_type)
+                .await;
 
-            println!("Exporting {} '{}'", doc_type, file_path.display());
-            save_body_to_file(body, &abs_file_path, None).await?;
-            stats.file_count += 1;
+            match export_result {
+                Ok(body) => {
+                    println!("Exporting {} '{}'", doc_type, file_path.display());
+                    save_body_to_file(body, &abs_file_path, None).await?;
+                    stats.file_count += 1;
+                }
+                Err(err) => {
+                    let msg = format!(
+                        "Failed to export '{}': {}",
+                        file_path.display(), err
+                    );
+                    eprintln!("Warning: {}", msg);
+                    stats.warnings.push(msg);
+                }
+            }
         } else if drive_file::is_google_apps_type(child) {
             let file_name = child.name.clone().unwrap_or_default();
             let mime = child.mime_type.as_deref().unwrap_or("unknown");
-            eprintln!(
-                "Warning: Skipping '{}' (unsupported Google Apps type: {})",
+            let msg = format!(
+                "Skipping '{}' (unsupported Google Apps type: {})",
                 file_name, mime
             );
+            eprintln!("Warning: {}", msg);
+            stats.warnings.push(msg);
         }
     }
 
