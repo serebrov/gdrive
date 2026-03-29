@@ -262,6 +262,7 @@ async fn download_directory_recursive(
 
             println!("Downloading file '{}'", file_path.display());
             save_body_to_file(body, &abs_file_path, child.md5_checksum.clone()).await?;
+            set_mtime_from_drive(&abs_file_path, child);
             stats.file_count += 1;
             stats.total_file_size += child.size.unwrap_or(0) as u64;
             if let Some(id) = child.id.as_deref() {
@@ -275,6 +276,13 @@ async fn download_directory_recursive(
             let file_path = dir_path.join(&export_name);
             let abs_file_path = root_path.join(&file_path);
 
+            if local_file_is_same_date(&abs_file_path, child) {
+                if let Some(id) = child.id.as_deref() {
+                    stats.downloaded_files.insert(id.to_string(), file_path.clone());
+                }
+                continue;
+            }
+
             let mime_type = export_ext.get_export_mime().unwrap();
             let export_result = files::export::export_file(hub, child.id.as_deref().unwrap_or_default(), &mime_type)
                 .await;
@@ -283,6 +291,7 @@ async fn download_directory_recursive(
                 Ok(body) => {
                     println!("Exporting {} '{}'", doc_type, file_path.display());
                     save_body_to_file(body, &abs_file_path, None).await?;
+                    set_mtime_from_drive(&abs_file_path, child);
                     stats.file_count += 1;
                     if let Some(id) = child.id.as_deref() {
                         stats.downloaded_files.insert(id.to_string(), file_path.clone());
@@ -308,6 +317,9 @@ async fn download_directory_recursive(
             stats.warnings.push(msg);
         }
     }
+
+    // Set folder mtime after contents are written
+    set_mtime_from_drive(&abs_dir_path, dir_file);
 
     Ok(())
 }
@@ -681,6 +693,46 @@ fn err_if_md5_mismatch(expected: Option<String>, actual: String) -> Result<(), E
 }
 
 const MAX_FILENAME_BYTES: usize = 255;
+
+/// Set the local file's modification time to match the Drive file's
+fn set_mtime_from_drive(path: &PathBuf, drive_file: &google_drive3::api::File) {
+    if let Some(modified) = &drive_file.modified_time {
+        let ft = filetime::FileTime::from_unix_time(modified.timestamp(), 0);
+        if let Err(err) = filetime::set_file_mtime(path, ft) {
+            eprintln!(
+                "Warning: Failed to set modification time for '{}': {}",
+                path.display(),
+                err
+            );
+        }
+    }
+}
+
+/// Check if a local file exists and has the same modification date as the Drive file
+fn local_file_is_same_date(path: &PathBuf, drive_file: &google_drive3::api::File) -> bool {
+    let drive_modified = match &drive_file.modified_time {
+        Some(t) => t,
+        None => return false,
+    };
+
+    let metadata = match fs::metadata(path) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+
+    let local_modified = match metadata.modified() {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
+
+    let drive_secs = drive_modified.timestamp();
+    let local_secs = local_modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    drive_secs == local_secs
+}
 
 /// Returns (sanitized_name, was_truncated)
 fn sanitize_filename(name: &str) -> (String, bool) {
