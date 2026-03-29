@@ -7,6 +7,7 @@ pub const MIME_TYPE_DRIVE_DOCUMENT: &str = "application/vnd.google-apps.document
 pub const MIME_TYPE_DRIVE_SHORTCUT: &str = "application/vnd.google-apps.shortcut";
 pub const MIME_TYPE_DRIVE_SPREADSHEET: &str = "application/vnd.google-apps.spreadsheet";
 pub const MIME_TYPE_DRIVE_PRESENTATION: &str = "application/vnd.google-apps.presentation";
+pub const MIME_TYPE_DRIVE_DRAWING: &str = "application/vnd.google-apps.drawing";
 
 pub const EXTENSION_DOC: &str = "doc";
 pub const EXTENSION_DOCX: &str = "docx";
@@ -28,6 +29,7 @@ pub const EXTENSION_PPTX: &str = "pptx";
 pub const EXTENSION_ODP: &str = "odp";
 pub const EXTENSION_EPUB: &str = "epub";
 pub const EXTENSION_TXT: &str = "txt";
+pub const EXTENSION_SVG: &str = "svg";
 
 pub const MIME_TYPE_DOC: &str = "application/msword";
 pub const MIME_TYPE_DOCX: &str =
@@ -52,12 +54,14 @@ pub const MIME_TYPE_PPTX: &str =
 pub const MIME_TYPE_ODP: &str = "application/vnd.oasis.opendocument.presentation";
 pub const MIME_TYPE_EPUB: &str = "application/epub+zip";
 pub const MIME_TYPE_TXT: &str = "text/plain";
+pub const MIME_TYPE_SVG: &str = "image/svg+xml";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DocType {
     Document,
     Spreadsheet,
     Presentation,
+    Drawing,
 }
 
 impl DocType {
@@ -101,6 +105,7 @@ impl DocType {
             MIME_TYPE_DRIVE_DOCUMENT => Some(DocType::Document),
             MIME_TYPE_DRIVE_SPREADSHEET => Some(DocType::Spreadsheet),
             MIME_TYPE_DRIVE_PRESENTATION => Some(DocType::Presentation),
+            MIME_TYPE_DRIVE_DRAWING => Some(DocType::Drawing),
             _ => None,
         }
     }
@@ -117,6 +122,16 @@ impl DocType {
             DocType::Document => FileExtension::Pdf,
             DocType::Spreadsheet => FileExtension::Csv,
             DocType::Presentation => FileExtension::Pdf,
+            DocType::Drawing => FileExtension::Pdf,
+        }
+    }
+
+    pub fn default_office_export_type(&self) -> FileExtension {
+        match self {
+            DocType::Document => FileExtension::Docx,
+            DocType::Spreadsheet => FileExtension::Xlsx,
+            DocType::Presentation => FileExtension::Pptx,
+            DocType::Drawing => FileExtension::Png,
         }
     }
 
@@ -150,6 +165,13 @@ impl DocType {
                 FileExtension::Odp,
                 FileExtension::Txt,
             ],
+
+            DocType::Drawing => vec![
+                FileExtension::Pdf,
+                FileExtension::Png,
+                FileExtension::Jpg,
+                FileExtension::Svg,
+            ],
         }
     }
 
@@ -158,6 +180,7 @@ impl DocType {
             DocType::Document => MIME_TYPE_DRIVE_DOCUMENT.parse().ok(),
             DocType::Spreadsheet => MIME_TYPE_DRIVE_SPREADSHEET.parse().ok(),
             DocType::Presentation => MIME_TYPE_DRIVE_PRESENTATION.parse().ok(),
+            DocType::Drawing => MIME_TYPE_DRIVE_DRAWING.parse().ok(),
         }
     }
 }
@@ -168,6 +191,7 @@ impl fmt::Display for DocType {
             DocType::Document => write!(f, "document"),
             DocType::Spreadsheet => write!(f, "spreadsheet"),
             DocType::Presentation => write!(f, "presentation"),
+            DocType::Drawing => write!(f, "drawing"),
         }
     }
 }
@@ -194,6 +218,7 @@ pub enum FileExtension {
     Odp,
     Epub,
     Txt,
+    Svg,
 }
 
 impl fmt::Display for FileExtension {
@@ -219,6 +244,7 @@ impl fmt::Display for FileExtension {
             FileExtension::Odp => write!(f, "{}", EXTENSION_ODP),
             FileExtension::Epub => write!(f, "{}", EXTENSION_EPUB),
             FileExtension::Txt => write!(f, "{}", EXTENSION_TXT),
+            FileExtension::Svg => write!(f, "{}", EXTENSION_SVG),
         }
     }
 }
@@ -248,6 +274,7 @@ impl FileExtension {
             EXTENSION_ODP => Some(FileExtension::Odp),
             EXTENSION_EPUB => Some(FileExtension::Epub),
             EXTENSION_TXT => Some(FileExtension::Txt),
+            EXTENSION_SVG => Some(FileExtension::Svg),
             _ => None,
         }
     }
@@ -274,6 +301,7 @@ impl FileExtension {
             FileExtension::Odp => MIME_TYPE_ODP.parse().ok(),
             FileExtension::Epub => MIME_TYPE_EPUB.parse().ok(),
             FileExtension::Txt => MIME_TYPE_TXT.parse().ok(),
+            FileExtension::Svg => MIME_TYPE_SVG.parse().ok(),
         }
     }
 }
@@ -288,4 +316,11 @@ pub fn is_binary(file: &google_drive3::api::File) -> bool {
 
 pub fn is_shortcut(file: &google_drive3::api::File) -> bool {
     file.mime_type == Some(String::from(MIME_TYPE_DRIVE_SHORTCUT))
+}
+
+pub fn is_google_apps_type(file: &google_drive3::api::File) -> bool {
+    file.mime_type
+        .as_deref()
+        .map(|m| m.starts_with("application/vnd.google-apps."))
+        .unwrap_or(false)
 }
