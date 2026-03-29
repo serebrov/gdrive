@@ -8,6 +8,7 @@ use async_recursion::async_recursion;
 use futures::stream::StreamExt;
 use google_drive3::hyper;
 use human_bytes::human_bytes;
+use std::collections::HashMap;
 use std::error;
 use std::fmt::Display;
 use std::fmt::Formatter;
@@ -142,6 +143,15 @@ pub async fn download_directory(
     let mut stats = DownloadStats::default();
     download_directory_recursive(hub, file, &root_path, &dir_path, &mut stats).await?;
 
+    // Process shortcuts
+    if !stats.pending_shortcuts.is_empty() {
+        println!("\nProcessing {} shortcut(s)...", stats.pending_shortcuts.len());
+        let shortcuts: Vec<PendingShortcut> = std::mem::take(&mut stats.pending_shortcuts);
+        for shortcut in shortcuts {
+            process_shortcut(hub, &shortcut, &root_path, &mut stats).await?;
+        }
+    }
+
     println!(
         "Downloaded {} files in {} directories with a total size of {}",
         stats.file_count,
@@ -165,6 +175,18 @@ struct DownloadStats {
     folder_count: u64,
     total_file_size: u64,
     warnings: Vec<String>,
+    /// Maps drive file ID to its local path (relative to root_path)
+    downloaded_files: HashMap<String, PathBuf>,
+    /// Shortcuts to process after all files are downloaded: (shortcut_name, target_id, target_mime, local_path)
+    pending_shortcuts: Vec<PendingShortcut>,
+}
+
+struct PendingShortcut {
+    name: String,
+    target_id: String,
+    target_mime: Option<String>,
+    /// The directory where this shortcut lives (relative to root_path)
+    local_dir: PathBuf,
 }
 
 #[async_recursion]
@@ -205,7 +227,19 @@ async fn download_directory_recursive(
             stats.warnings.push(msg);
         }
 
-        if drive_file::is_directory(child) {
+        if drive_file::is_shortcut(child) {
+            if let Some(details) = &child.shortcut_details {
+                if let Some(target_id) = &details.target_id {
+                    stats.pending_shortcuts.push(PendingShortcut {
+                        name: safe_name.clone(),
+                        target_id: target_id.clone(),
+                        target_mime: details.target_mime_type.clone(),
+                        local_dir: dir_path.clone(),
+                    });
+                    println!("Found shortcut '{}', will process after download", safe_name);
+                }
+            }
+        } else if drive_file::is_directory(child) {
             let child_path = dir_path.join(&safe_name);
             download_directory_recursive(hub, child, root_path, &child_path, stats).await?;
         } else if drive_file::is_binary(child) {
@@ -215,6 +249,9 @@ async fn download_directory_recursive(
             if abs_file_path.exists() {
                 let file_md5 = compute_md5_from_path(&abs_file_path).unwrap_or_default();
                 if child.md5_checksum.as_deref() == Some(&file_md5) {
+                    if let Some(id) = child.id.as_deref() {
+                        stats.downloaded_files.insert(id.to_string(), file_path.clone());
+                    }
                     continue;
                 }
             }
@@ -227,6 +264,9 @@ async fn download_directory_recursive(
             save_body_to_file(body, &abs_file_path, child.md5_checksum.clone()).await?;
             stats.file_count += 1;
             stats.total_file_size += child.size.unwrap_or(0) as u64;
+            if let Some(id) = child.id.as_deref() {
+                stats.downloaded_files.insert(id.to_string(), file_path.clone());
+            }
         } else if let Some(doc_type) = DocType::from_mime_type(
             child.mime_type.as_deref().unwrap_or_default(),
         ) {
@@ -244,6 +284,9 @@ async fn download_directory_recursive(
                     println!("Exporting {} '{}'", doc_type, file_path.display());
                     save_body_to_file(body, &abs_file_path, None).await?;
                     stats.file_count += 1;
+                    if let Some(id) = child.id.as_deref() {
+                        stats.downloaded_files.insert(id.to_string(), file_path.clone());
+                    }
                 }
                 Err(err) => {
                     let msg = format!(
@@ -267,6 +310,148 @@ async fn download_directory_recursive(
     }
 
     Ok(())
+}
+
+async fn process_shortcut(
+    hub: &Hub,
+    shortcut: &PendingShortcut,
+    root_path: &PathBuf,
+    stats: &mut DownloadStats,
+) -> Result<(), Error> {
+    let link_name = &shortcut.name;
+    let abs_link_dir = root_path.join(&shortcut.local_dir);
+
+    // If the target was already downloaded locally, create a symlink
+    if let Some(target_path) = stats.downloaded_files.get(&shortcut.target_id) {
+        let abs_target = root_path.join(target_path);
+        let abs_link = abs_link_dir.join(link_name);
+
+        // Compute relative path from link location to target
+        let relative_target = pathdiff_relative(&abs_link_dir, &abs_target);
+
+        // Skip if symlink already exists and points to the same target
+        if abs_link.is_symlink() {
+            if let Ok(existing_target) = fs::read_link(&abs_link) {
+                if existing_target == relative_target {
+                    return Ok(());
+                }
+            }
+            // Remove stale symlink
+            println!(
+                "Replacing symlink '{}' -> '{}'",
+                shortcut.local_dir.join(link_name).display(),
+                relative_target.display()
+            );
+            fs::remove_file(&abs_link)
+                .map_err(|err| Error::CreateSymlink(abs_link.clone(), err))?;
+        }
+
+        println!(
+            "Creating symlink '{}' -> '{}'",
+            shortcut.local_dir.join(link_name).display(),
+            relative_target.display()
+        );
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&relative_target, &abs_link)
+                .map_err(|err| Error::CreateSymlink(abs_link.clone(), err))?;
+        }
+
+        #[cfg(not(unix))]
+        {
+            let msg = format!(
+                "Cannot create symlink for '{}' (not supported on this platform)",
+                link_name
+            );
+            eprintln!("Warning: {}", msg);
+            stats.warnings.push(msg);
+        }
+
+        return Ok(());
+    }
+
+    // Target not in local tree — fetch file info and download/export
+    let target_mime = shortcut.target_mime.as_deref().unwrap_or_default();
+
+    if target_mime == drive_file::MIME_TYPE_DRIVE_FOLDER {
+        // Shared folder: recursively download into a subdirectory named after the shortcut
+        let target_file = files::info::get_file(hub, &shortcut.target_id)
+            .await
+            .map_err(Error::GetFile)?;
+
+        let child_path = shortcut.local_dir.join(link_name);
+        println!(
+            "Downloading shared folder shortcut '{}'",
+            child_path.display()
+        );
+        download_directory_recursive(hub, &target_file, root_path, &child_path, stats).await?;
+    } else if let Some(doc_type) = DocType::from_mime_type(target_mime) {
+        // Shared Google Doc: export
+        let export_ext = doc_type.default_office_export_type();
+        let export_name = format!("{}.{}", link_name, export_ext);
+        let file_path = shortcut.local_dir.join(&export_name);
+        let abs_file_path = root_path.join(&file_path);
+
+        let mime_type = export_ext.get_export_mime().unwrap();
+        let export_result =
+            files::export::export_file(hub, &shortcut.target_id, &mime_type).await;
+
+        match export_result {
+            Ok(body) => {
+                println!("Exporting shared {} shortcut '{}'", doc_type, file_path.display());
+                save_body_to_file(body, &abs_file_path, None).await?;
+                stats.file_count += 1;
+            }
+            Err(err) => {
+                let msg = format!(
+                    "Failed to export shortcut '{}': {}",
+                    file_path.display(),
+                    err
+                );
+                eprintln!("Warning: {}", msg);
+                stats.warnings.push(msg);
+            }
+        }
+    } else {
+        // Shared binary file: download
+        let file_name = link_name;
+        let file_path = shortcut.local_dir.join(file_name);
+        let abs_file_path = root_path.join(&file_path);
+
+        let body = download_file(hub, &shortcut.target_id)
+            .await
+            .map_err(Error::DownloadFile)?;
+
+        println!("Downloading shared file shortcut '{}'", file_path.display());
+        save_body_to_file(body, &abs_file_path, None).await?;
+        stats.file_count += 1;
+    }
+
+    Ok(())
+}
+
+/// Compute a relative path from `base` directory to `target` path
+fn pathdiff_relative(base: &PathBuf, target: &PathBuf) -> PathBuf {
+    // Count how many components we need to go up from base
+    let base_components: Vec<_> = base.components().collect();
+    let target_components: Vec<_> = target.components().collect();
+
+    let common_len = base_components
+        .iter()
+        .zip(target_components.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+
+    let ups = base_components.len() - common_len;
+    let mut result = PathBuf::new();
+    for _ in 0..ups {
+        result.push("..");
+    }
+    for component in &target_components[common_len..] {
+        result.push(component);
+    }
+    result
 }
 
 pub async fn download_file(hub: &Hub, file_id: &str) -> Result<hyper::Body, google_drive3::Error> {
@@ -304,6 +489,7 @@ pub enum Error {
     CanonicalizeDestinationPath(PathBuf, io::Error),
     MissingShortcutTarget,
     IsShortcut(String),
+    CreateSymlink(PathBuf, io::Error),
     StdoutNotValidDestination,
 }
 
@@ -368,6 +554,12 @@ impl Display for Error {
                 f,
                 "'{}' is a shortcut, use --follow-shortcuts to download the file it points to",
                 name
+            ),
+            Error::CreateSymlink(path, err) => write!(
+                f,
+                "Failed to create symlink '{}': {}",
+                path.display(),
+                err
             ),
             Error::StdoutNotValidDestination => write!(
                 f,
