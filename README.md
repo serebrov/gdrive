@@ -22,6 +22,63 @@ gdrive files download --recursive --destination ~/GoogleDriveBackup root
 
 Note: `root` in the command above is a special name recognized by Google Drive API, it points to the root google drive folder.
 
+## Building from source
+
+Needs rust and cargo to build.
+
+```
+cargo build
+```
+
+Creates a binary in `./target/debug/gdrive`.
+
+To update dependencies, run `cargo update` before `cargo build`. Note that this is not necessary, there is a committed `Cargo.lock`. If the build stops working after `cargo update`, the simple fix is `git checkout Cargo.lock`.
+
+## Authorization
+
+The tool requires a Google Cloud OAuth Client to work.
+The setup is described in [./docs/create_google_api_credentials.md](./docs/create_google_api_credentials.md)
+
+The authorization is done like this:
+
+```shell
+~/sources/gdrive on download-add-export!
+$ ./target/debug/gdrive account add
+
+To add an account you need a Google Client ID and Client Secret.
+Instructions for how to create credentials can be found here: https://github.com/glotlabs/gdrive/blob/main/docs/create_google_api_credentials.md
+Note that if you are using gdrive on a remote server you should read this first: https://github.com/glotlabs/gdrive#using-gdrive-on-a-remote-server
+
+Client ID: ... (the GdriveCliMac-2025-11 client id)
+Client secret: ... (the GdriveCliMac-2025-11 client secret)
+
+Gdrive requires permissions to manage your files on Google Drive.
+Open the url in your browser and follow the instructions:
+https://accounts.google.com/o/oauth2/auth?scope=https://www.googleapis.com/auth/drive%20https://www.googleapis.com/auth/drive.metadata.readonly&access_type=offline&redirect_uri=http://127.0.0.1:8085&response_type=code&client_id=...
+
+Saved account credentials in /Users/seb/.config/gdrive3
+Keep them safe! If someone gets access to them, they will also be able to access your Google Drive.
+
+Logged in as {user}@gmail.com
+```
+
+Now you can use it to download and export files from Google Drive.
+
+An example backup script to download everything:
+
+```
+GDRIVE=~/src/gdrive/target/debug/gdrive
+LIMIT=9999999
+BACKUP_DIR=~/Documents/GoogleDriveBackup
+
+mkdir -p $BACKUP_DIR
+cd $BACKUP_DIR
+
+# The `root` is a special alias for the root folder in google drive (accepted by
+# google drive API).
+$GDRIVE files download --recursive --overwrite --destination $BACKUP_DIR root
+```
+
 # Original readme: gdrive
 
 <img src="https://user-images.githubusercontent.com/720405/210108089-32b7a259-b384-49c3-a2d3-fe07a42791e2.png" width="100">
