@@ -16,6 +16,28 @@ google-drive3 = { git = "https://github.com/prasmussen/google-apis-rs", branch =
 home = "0.5.4"
 human_bytes = { version = "0.4.1", default-features = false }
 hyper = { version = "0.14.23", features = ["stream"] }
+# Pin yup-oauth2 because higher versions use hyper-rustls 0.24.2 and
+# hyper above uses hyper-rustls 0.23.2.
+# When both versions are presend, the build fails with
+# error[E0599]: no method named `enable_http2` found for struct `google_drive3::hyper_rustls::HttpsConnectorBuilder<State>` in the current scope
+#   --> src/hub.rs:37:14
+#    |
+# 33 |           let connector = HttpsConnectorBuilder::new()
+#    |  _________________________-
+# 34 | |             .with_native_roots()
+# 35 | |             .https_or_http()
+# 36 | |             .enable_http1()
+# 37 | |             .enable_http2()
+#    | |             -^^^^^^^^^^^^ method not found in `HttpsConnectorBuilder<WantsProtocols2>`
+#    | |_____________|
+#
+# Because http2 is now not enabled for hyper-rustls 0.23.2 (it was enabled by
+# yup-oauth2).
+yup-oauth2 = { version = "=8.1.0" }
+# Also this does not work:
+# hyper-rustls = { version = "0.23.2", features = ["http1", "http2"] }
+# rust starts complaining about incorrect arguments and notes that there are
+# mulitple hyper-rustls versions in the dependency tree.
 md5 = "0.7.0"
 mime = "0.3.16"
 mime_guess = "2.0.4"
